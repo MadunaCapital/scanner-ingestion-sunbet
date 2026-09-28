@@ -78,6 +78,30 @@ genuine 3-way cricket market was not observed live at discovery time --
 only noted as a theoretical possibility (Test cricket can be drawn) worth
 re-checking if one ever shows up. As with rugby, the mapping logic needed
 no special-casing to handle this: it never assumes OT_CROSS exists.
+
+Tennis's slug is simply "tennis" (the naive guess, no brute-forcing
+needed, like cricket) -- confirmed working with HTTP 200 and a real live
+payload (155 events, mostly Challenger/ITF-tier tournaments -- e.g.
+Mouilleron Le Captif, Bari, Columbus -- both singles and doubles) whose own
+`terms` entry self-reports `"termKey":"tennis"`/`"localizedName":"Tennis"`.
+Tennis's moneyline betOffer uses betOfferType "Match" with criterion
+englishLabel "Match Odds" -- same label text cricket uses, but that's just
+a coincidence of Kambi's own labelling; the two never collide because the
+lookup is always keyed off the record's own `event.sport` first
+(KAMBI_SPORT_INFO), never off the label alone. Every one of the 155 live
+tennis Match betOffers inspected at discovery time was a genuine 2-way
+market -- only OT_ONE/OT_TWO outcomes, no OT_CROSS anywhere in the payload
+-- consistent with tennis, which (unlike soccer/rugby/cricket) has no
+mechanism to end in a draw at all, so OT_CROSS should never appear for this
+sport. The payload includes both singles (`homeName`/`awayName` a single
+player, e.g. "Pierre-Hugues Herbert" vs "Sascha Gueymard Wayenburg") and
+doubles (a "/"-joined pair, e.g. "L. Poullain/A. Reco" vs "L. Broady/E.
+Hudd") matches, and a mix of tour levels (ATP/WTA/ITF/Challenger, per each
+event's own `path` entries) -- none of that is filtered on, same as
+competition tier isn't filtered for the other three sports; whatever the
+listView endpoint returns is mapped as-is. As with rugby and cricket, the
+mapping logic needed no special-casing to handle this: it never assumes
+OT_CROSS exists.
 """
 
 import asyncio
@@ -98,8 +122,9 @@ SUNBET_KAMBI_LISTVIEW_URL_TEMPLATE = (
 # The Kambi `listView` path segment for each sport this adapter polls. See
 # the module docstring for how "rugby_union" was confirmed (and why the
 # more obvious "rugby"/"rugby-union" guesses are wrong -- both 404), and how
-# "cricket" (the naive guess) was confirmed to work as-is.
-DEFAULT_KAMBI_SPORT_SLUGS = ("football", "rugby_union", "cricket")
+# "cricket" and "tennis" (the naive guesses) were each confirmed to work
+# as-is.
+DEFAULT_KAMBI_SPORT_SLUGS = ("football", "rugby_union", "cricket", "tennis")
 
 # Kambi's per-record `event.sport` value -> the universal OddsEvent.sport
 # name to publish, and which Match betOffer's criterion.englishLabel is
@@ -109,6 +134,7 @@ KAMBI_SPORT_INFO = {
     "FOOTBALL": {"sport": "soccer", "moneyline_criterion": "Full Time"},
     "RUGBY_UNION": {"sport": "rugby", "moneyline_criterion": "Regular Time"},
     "CRICKET": {"sport": "cricket", "moneyline_criterion": "Match Odds"},
+    "TENNIS": {"sport": "tennis", "moneyline_criterion": "Match Odds"},
 }
 
 # Plain, fixed-interval polling -- same cadence as a normal page refresh,
@@ -168,7 +194,8 @@ class SunbetScraper(BaseScraper):
         scope. Sport-agnostic -- it reads each record's own `event.sport`
         field (via KAMBI_SPORT_INFO) rather than trusting which sport slug
         the caller happened to fetch, so it works the same whether `raw`
-        came from the football, rugby_union, or cricket listView call.
+        came from the football, rugby_union, cricket, or tennis listView
+        call.
 
         Note event_id (the OddsEvent field) is left unset here -- that's the
         engine's job downstream (see the note on OddsEvent.event_id in

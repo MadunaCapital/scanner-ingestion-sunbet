@@ -373,6 +373,166 @@ CRICKET_TWO_WAY_RAW_PAYLOAD = {
 }
 
 
+# Shape captured from a real, plain GET to Sunbet's Kambi-hosted `listView`
+# endpoint with the "tennis" sport slug (see scraper.py's module docstring
+# for how that slug was confirmed -- the naive guess "tennis" worked first
+# try, no brute-forcing needed, like cricket). Trimmed to one match's worth
+# of records, field names and values unchanged from the real response. A
+# singles Challenger-tour match, genuinely 2-way -- only OT_ONE/OT_TWO
+# outcomes, no OT_CROSS -- consistent with tennis, which has no mechanism to
+# end in a draw at all.
+TENNIS_SINGLES_RAW_PAYLOAD = {
+    "events": [
+        {
+            "event": {
+                "id": 1029286634,
+                "name": "Pierre-Hugues Herbert - Sascha Gueymard Wayenburg",
+                "homeName": "Pierre-Hugues Herbert",
+                "awayName": "Sascha Gueymard Wayenburg",
+                "start": "2026-09-28T17:20:00Z",
+                "group": "Mouilleron Le Captif",
+                "sport": "TENNIS",
+                "state": "NOT_STARTED",
+            },
+            "betOffers": [
+                {
+                    "id": 2697526093,
+                    "criterion": {"id": 1001159551, "label": "Match Odds", "englishLabel": "Match Odds"},
+                    "betOfferType": {"id": 2, "name": "Match"},
+                    "eventId": 1029286634,
+                    "outcomes": [
+                        {
+                            "id": 4354068557,
+                            "label": "Pierre-Hugues Herbert",
+                            "odds": 2330,
+                            "type": "OT_ONE",
+                            "status": "OPEN",
+                            "betOfferId": 2697526093,
+                        },
+                        {
+                            "id": 4354068558,
+                            "label": "Sascha Gueymard Wayenburg",
+                            "odds": 1570,
+                            "type": "OT_TWO",
+                            "status": "OPEN",
+                            "betOfferId": 2697526093,
+                        },
+                    ],
+                }
+            ],
+        }
+    ]
+}
+
+
+# Same real listView pull, a doubles match this time -- Kambi represents a
+# doubles pairing as a single "/"-joined participant name (e.g.
+# "L. Poullain/A. Reco"), and this adapter doesn't filter by singles vs.
+# doubles or by tour level (ATP/WTA/ITF/Challenger) -- whatever the endpoint
+# returns is mapped as-is, same as competition tier isn't filtered for the
+# other sports.
+TENNIS_DOUBLES_RAW_PAYLOAD = {
+    "events": [
+        {
+            "event": {
+                "id": 1029292638,
+                "name": "L. Poullain/A. Reco - L. Broady/E. Hudd",
+                "homeName": "L. Poullain/A. Reco",
+                "awayName": "L. Broady/E. Hudd",
+                "start": "2026-09-28T16:20:00Z",
+                "group": "Mouilleron Le Captif",
+                "sport": "TENNIS",
+                "state": "STARTED",
+            },
+            "betOffers": [
+                {
+                    "id": 2697635381,
+                    "criterion": {"id": 1001159551, "label": "Match Odds", "englishLabel": "Match Odds"},
+                    "betOfferType": {"id": 2, "name": "Match"},
+                    "eventId": 1029292638,
+                    "outcomes": [
+                        {
+                            "id": 4354425348,
+                            "label": "L. Poullain/A. Reco",
+                            "odds": 4200,
+                            "type": "OT_ONE",
+                            "status": "OPEN",
+                            "betOfferId": 2697635381,
+                        },
+                        {
+                            "id": 4354425349,
+                            "label": "L. Broady/E. Hudd",
+                            "odds": 1200,
+                            "type": "OT_TWO",
+                            "status": "OPEN",
+                            "betOfferId": 2697635381,
+                        },
+                    ],
+                }
+            ],
+        }
+    ]
+}
+
+
+def test_to_odds_events_maps_tennis_singles_two_way_market_with_no_draw():
+    """Every live tennis Match betOffer found at discovery time was 2-way
+    (no OT_CROSS) -- tennis has no mechanism to end in a draw at all, so
+    draw_odds must come through unset."""
+    scraper = SunbetScraper()
+
+    events = scraper.to_odds_events(TENNIS_SINGLES_RAW_PAYLOAD)
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.sport == "tennis"
+    assert event.league == "Mouilleron Le Captif"
+    assert event.home_team == "Pierre-Hugues Herbert"
+    assert event.away_team == "Sascha Gueymard Wayenburg"
+    assert event.bookmaker == "sunbet"
+    assert event.event_id is None
+    assert event.markets["moneyline"].home_odds == 2.33
+    assert event.markets["moneyline"].away_odds == 1.57
+    assert event.markets["moneyline"].draw_odds is None
+
+
+def test_to_odds_events_maps_tennis_doubles_market_without_filtering_it_out():
+    """Doubles matches (a "/"-joined pair as the participant name) aren't
+    filtered out -- they map the same as singles, home/away pair names and
+    all."""
+    scraper = SunbetScraper()
+
+    events = scraper.to_odds_events(TENNIS_DOUBLES_RAW_PAYLOAD)
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.sport == "tennis"
+    assert event.home_team == "L. Poullain/A. Reco"
+    assert event.away_team == "L. Broady/E. Hudd"
+    assert event.markets["moneyline"].home_odds == 4.2
+    assert event.markets["moneyline"].away_odds == 1.2
+    assert event.markets["moneyline"].draw_odds is None
+
+
+def test_to_odds_events_skips_tennis_events_without_a_match_odds_offer():
+    payload = {
+        "events": [
+            {
+                **TENNIS_SINGLES_RAW_PAYLOAD["events"][0],
+                "betOffers": [
+                    {
+                        **TENNIS_SINGLES_RAW_PAYLOAD["events"][0]["betOffers"][0],
+                        "betOfferType": {"id": 9, "name": "Handicap"},
+                    }
+                ],
+            }
+        ]
+    }
+    scraper = SunbetScraper()
+
+    assert scraper.to_odds_events(payload) == []
+
+
 def test_to_odds_events_maps_cricket_two_way_market_with_no_draw():
     """Every live cricket fixture found at discovery time was limited-overs
     (ODI/T20) and 2-way (no OT_CROSS) -- draw_odds must come through unset
@@ -413,28 +573,33 @@ def test_to_odds_events_skips_cricket_events_without_a_match_odds_offer():
     assert scraper.to_odds_events(payload) == []
 
 
-def test_to_odds_events_handles_soccer_rugby_and_cricket_in_the_same_batch_independently():
-    """poll() now combines all three sports' raw payloads before
+def test_to_odds_events_handles_soccer_rugby_cricket_and_tennis_in_the_same_batch_independently():
+    """poll() now combines all four sports' raw payloads before
     to_odds_events ever sees them -- confirm the per-event sport lookup (and
-    its matching moneyline criterion) doesn't leak state across all three
-    sports in one batch."""
+    its matching moneyline criterion) doesn't leak state across all four
+    sports in one batch. Notably cricket and tennis share the exact same
+    criterion englishLabel ("Match Odds"), so this also confirms that
+    coincidence doesn't cause cross-sport mix-ups."""
     payload = {
         "events": [
             SAMPLE_RAW_PAYLOAD["events"][0],
             RUGBY_TWO_WAY_RAW_PAYLOAD["events"][0],
             CRICKET_TWO_WAY_RAW_PAYLOAD["events"][0],
+            TENNIS_SINGLES_RAW_PAYLOAD["events"][0],
         ]
     }
     scraper = SunbetScraper()
 
     events = scraper.to_odds_events(payload)
 
-    assert len(events) == 3
+    assert len(events) == 4
     by_sport = {e.sport: e for e in events}
     assert by_sport["soccer"].home_team == "Leixoes U23"
     assert by_sport["rugby"].home_team == "New Zealand"
     assert by_sport["cricket"].home_team == "Sri Lanka"
     assert by_sport["cricket"].markets["moneyline"].draw_odds is None
+    assert by_sport["tennis"].home_team == "Pierre-Hugues Herbert"
+    assert by_sport["tennis"].markets["moneyline"].draw_odds is None
 
 
 def test_to_odds_events_maps_rugby_two_way_market_with_no_draw():
@@ -493,13 +658,14 @@ def test_to_odds_events_skips_rugby_events_without_a_match_regular_time_offer():
 
 
 def test_to_odds_events_skips_events_with_an_unrecognized_kambi_sport():
-    """A sport this adapter doesn't cover (e.g. tennis) must be skipped
-    rather than crash or be mis-published under an existing sport name."""
+    """A sport this adapter doesn't cover (e.g. table tennis) must be
+    skipped rather than crash or be mis-published under an existing sport
+    name."""
     payload = {
         "events": [
             {
                 **RUGBY_TWO_WAY_RAW_PAYLOAD["events"][0],
-                "event": {**RUGBY_TWO_WAY_RAW_PAYLOAD["events"][0]["event"], "sport": "TENNIS"},
+                "event": {**RUGBY_TWO_WAY_RAW_PAYLOAD["events"][0]["event"], "sport": "TABLE_TENNIS"},
             }
         ]
     }
@@ -593,16 +759,17 @@ async def test_poll_continues_past_a_transient_fetch_failure(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_poll_fetches_every_configured_sport_and_merges_results(monkeypatch):
-    """The default scraper polls soccer, rugby, and cricket every cycle, as
-    three separate requests to the same endpoint, and publishes them
-    together as one batch."""
-    scraper = SunbetScraper()  # default kambi_sport_slugs: football + rugby_union + cricket
+    """The default scraper polls soccer, rugby, cricket, and tennis every
+    cycle, as four separate requests to the same endpoint, and publishes
+    them together as one batch."""
+    scraper = SunbetScraper()  # default kambi_sport_slugs: football + rugby_union + cricket + tennis
     requested_slugs = []
 
     payload_by_slug = {
         "football": SAMPLE_RAW_PAYLOAD,
         "rugby_union": RUGBY_TWO_WAY_RAW_PAYLOAD,
         "cricket": CRICKET_TWO_WAY_RAW_PAYLOAD,
+        "tennis": TENNIS_SINGLES_RAW_PAYLOAD,
     }
 
     async def fake_fetch_raw_odds(kambi_sport_slug):
@@ -616,26 +783,33 @@ async def test_poll_fetches_every_configured_sport_and_merges_results(monkeypatc
         results.append(events)
         break
 
-    assert requested_slugs == ["football", "rugby_union", "cricket"]
+    assert requested_slugs == ["football", "rugby_union", "cricket", "tennis"]
     assert len(results) == 1
     batch = results[0]
-    assert len(batch) == 3
-    assert {e.sport for e in batch} == {"soccer", "rugby", "cricket"}
-    assert {e.home_team for e in batch} == {"Leixoes U23", "New Zealand", "Sri Lanka"}
+    assert len(batch) == 4
+    assert {e.sport for e in batch} == {"soccer", "rugby", "cricket", "tennis"}
+    assert {e.home_team for e in batch} == {
+        "Leixoes U23",
+        "New Zealand",
+        "Sri Lanka",
+        "Pierre-Hugues Herbert",
+    }
 
 
 @pytest.mark.asyncio
 async def test_poll_still_publishes_the_other_sports_when_one_sports_fetch_fails(monkeypatch):
     import httpx
 
-    scraper = SunbetScraper()  # default kambi_sport_slugs: football + rugby_union + cricket
+    scraper = SunbetScraper()  # default kambi_sport_slugs: football + rugby_union + cricket + tennis
 
     async def fake_fetch_raw_odds(kambi_sport_slug):
         if kambi_sport_slug == "football":
             raise httpx.ConnectError("simulated soccer outage")
         if kambi_sport_slug == "rugby_union":
             return RUGBY_TWO_WAY_RAW_PAYLOAD
-        return CRICKET_TWO_WAY_RAW_PAYLOAD
+        if kambi_sport_slug == "cricket":
+            return CRICKET_TWO_WAY_RAW_PAYLOAD
+        return TENNIS_SINGLES_RAW_PAYLOAD
 
     monkeypatch.setattr(scraper, "fetch_raw_odds", fake_fetch_raw_odds)
 
@@ -646,8 +820,8 @@ async def test_poll_still_publishes_the_other_sports_when_one_sports_fetch_fails
 
     assert len(results) == 1
     batch = results[0]
-    assert len(batch) == 2
-    assert {e.sport for e in batch} == {"rugby", "cricket"}
+    assert len(batch) == 3
+    assert {e.sport for e in batch} == {"rugby", "cricket", "tennis"}
 
 
 @pytest.mark.asyncio
@@ -660,7 +834,7 @@ async def test_poll_skips_the_yield_when_every_sport_fails_this_cycle(monkeypatc
 
     import httpx
 
-    scraper = SunbetScraper()  # default kambi_sport_slugs: football + rugby_union + cricket
+    scraper = SunbetScraper()  # default kambi_sport_slugs: football + rugby_union + cricket + tennis
     call_count = 0
 
     async def always_fails(kambi_sport_slug):
@@ -676,6 +850,6 @@ async def test_poll_skips_the_yield_when_every_sport_fails_this_cycle(monkeypatc
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(agen.__anext__(), timeout=0.5)
 
-    # Several full cycles (3 sport fetches each) should have run in that
+    # Several full cycles (4 sport fetches each) should have run in that
     # window, all failing, with nothing ever yielded.
     assert call_count >= 2
