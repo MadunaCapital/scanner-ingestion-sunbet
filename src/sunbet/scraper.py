@@ -102,6 +102,28 @@ competition tier isn't filtered for the other three sports; whatever the
 listView endpoint returns is mapped as-is. As with rugby and cricket, the
 mapping logic needed no special-casing to handle this: it never assumes
 OT_CROSS exists.
+
+Basketball's slug is simply "basketball" (the naive guess, no
+brute-forcing needed, like cricket and tennis) -- confirmed working with
+HTTP 200 and a real live payload (45 events, e.g. Turkey's Super League,
+various European domestic leagues) whose own `terms` entry self-reports
+`"termKey":"basketball"`/`"localizedName":"Basketball"`, and whose own
+per-event `event.sport` field self-reports `"BASKETBALL"`. Basketball's
+moneyline betOffer uses betOfferType "Match", but a criterion englishLabel
+not shared with any other sport here: "Moneyline - Including Overtime".
+That label -- and the same criterion's own `lifetime` field, which
+self-reports `"FULL_TIME_OVERTIME"` -- confirms this market is the
+whole-game price (including any overtime needed to break a tie), not a
+quarter- or half-only line; basketball has no notion of a "full time"
+or "regular time" the way soccer/rugby do; overtime is played until there's
+a winner, so there's no scoreline a Kambi listView event can settle on
+without one. Every one of the 38 live basketball Match betOffers with that
+criterion inspected at discovery time was a genuine 2-way market -- only
+OT_ONE/OT_TWO outcomes, no OT_CROSS anywhere in the payload -- consistent
+with basketball, which (like tennis, and like limited-overs cricket) always
+resolves to a winner and so should never have a draw outcome. As with
+rugby, cricket, and tennis, the mapping logic needed no special-casing to
+handle this: it never assumes OT_CROSS exists.
 """
 
 import asyncio
@@ -122,19 +144,20 @@ SUNBET_KAMBI_LISTVIEW_URL_TEMPLATE = (
 # The Kambi `listView` path segment for each sport this adapter polls. See
 # the module docstring for how "rugby_union" was confirmed (and why the
 # more obvious "rugby"/"rugby-union" guesses are wrong -- both 404), and how
-# "cricket" and "tennis" (the naive guesses) were each confirmed to work
-# as-is.
-DEFAULT_KAMBI_SPORT_SLUGS = ("football", "rugby_union", "cricket", "tennis")
+# "cricket", "tennis", and "basketball" (the naive guesses) were each
+# confirmed to work as-is.
+DEFAULT_KAMBI_SPORT_SLUGS = ("football", "rugby_union", "cricket", "tennis", "basketball")
 
 # Kambi's per-record `event.sport` value -> the universal OddsEvent.sport
 # name to publish, and which Match betOffer's criterion.englishLabel is
-# that sport's full/regular-time/match-odds moneyline market (see module
-# docstring).
+# that sport's full/regular-time/match-odds/overtime-inclusive moneyline
+# market (see module docstring).
 KAMBI_SPORT_INFO = {
     "FOOTBALL": {"sport": "soccer", "moneyline_criterion": "Full Time"},
     "RUGBY_UNION": {"sport": "rugby", "moneyline_criterion": "Regular Time"},
     "CRICKET": {"sport": "cricket", "moneyline_criterion": "Match Odds"},
     "TENNIS": {"sport": "tennis", "moneyline_criterion": "Match Odds"},
+    "BASKETBALL": {"sport": "basketball", "moneyline_criterion": "Moneyline - Including Overtime"},
 }
 
 # Plain, fixed-interval polling -- same cadence as a normal page refresh,

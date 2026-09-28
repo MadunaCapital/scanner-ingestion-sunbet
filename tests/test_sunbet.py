@@ -475,6 +475,108 @@ TENNIS_DOUBLES_RAW_PAYLOAD = {
 }
 
 
+# Shape captured from a real, plain GET to Sunbet's Kambi-hosted `listView`
+# endpoint with the "basketball" sport slug (see scraper.py's module
+# docstring for how that slug was confirmed -- the naive guess "basketball"
+# worked first try, no brute-forcing needed, like cricket and tennis).
+# Trimmed to one match's worth of records, field names and values unchanged
+# from the real response (a Turkish Super League fixture). The criterion's
+# own "lifetime": "FULL_TIME_OVERTIME" confirms "Moneyline - Including
+# Overtime" is the whole-game price, not a quarter/half line. A genuine
+# 2-way market -- only OT_ONE/OT_TWO outcomes, no OT_CROSS -- consistent
+# with basketball, which always resolves to a winner via overtime.
+BASKETBALL_TWO_WAY_RAW_PAYLOAD = {
+    "events": [
+        {
+            "event": {
+                "id": 1029238154,
+                "name": "Manisa Buyuksehir Belediye - Esenler Erokspor",
+                "homeName": "Manisa Buyuksehir Belediye",
+                "awayName": "Esenler Erokspor",
+                "start": "2026-09-28T16:02:00Z",
+                "group": "Super League",
+                "sport": "BASKETBALL",
+                "state": "NOT_STARTED",
+            },
+            "betOffers": [
+                {
+                    "id": 2697614814,
+                    "criterion": {
+                        "id": 1001159732,
+                        "label": "Moneyline - Including Overtime",
+                        "englishLabel": "Moneyline - Including Overtime",
+                        "occurrenceType": "POINTS",
+                        "lifetime": "FULL_TIME_OVERTIME",
+                    },
+                    "betOfferType": {"id": 2, "name": "Match", "englishName": "Match"},
+                    "eventId": 1029238154,
+                    "outcomes": [
+                        {
+                            "id": 4354468206,
+                            "label": "Manisa Buyuksehir Belediye",
+                            "odds": 1010,
+                            "participant": "Manisa Buyuksehir Belediye",
+                            "type": "OT_ONE",
+                            "status": "OPEN",
+                            "betOfferId": 2697614814,
+                        },
+                        {
+                            "id": 4354468207,
+                            "label": "Esenler Erokspor",
+                            "odds": 12000,
+                            "participant": "Esenler Erokspor",
+                            "type": "OT_TWO",
+                            "status": "OPEN",
+                            "betOfferId": 2697614814,
+                        },
+                    ],
+                }
+            ],
+        }
+    ]
+}
+
+
+def test_to_odds_events_maps_basketball_two_way_market_with_no_draw():
+    """Every live basketball Match betOffer found at discovery time was
+    2-way (no OT_CROSS) -- basketball always resolves to a winner via
+    overtime, so draw_odds must come through unset."""
+    scraper = SunbetScraper()
+
+    events = scraper.to_odds_events(BASKETBALL_TWO_WAY_RAW_PAYLOAD)
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.sport == "basketball"
+    assert event.league == "Super League"
+    assert event.home_team == "Manisa Buyuksehir Belediye"
+    assert event.away_team == "Esenler Erokspor"
+    assert event.bookmaker == "sunbet"
+    assert event.event_id is None
+    assert event.markets["moneyline"].home_odds == 1.01
+    assert event.markets["moneyline"].away_odds == 12.0
+    assert event.markets["moneyline"].draw_odds is None
+
+
+def test_to_odds_events_skips_basketball_events_without_a_moneyline_overtime_offer():
+    payload = {
+        "events": [
+            {
+                **BASKETBALL_TWO_WAY_RAW_PAYLOAD["events"][0],
+                "betOffers": [
+                    {
+                        **BASKETBALL_TWO_WAY_RAW_PAYLOAD["events"][0]["betOffers"][0],
+                        "betOfferType": {"id": 9, "name": "Handicap"},
+                    }
+                ],
+            }
+        ]
+    }
+    scraper = SunbetScraper()
+
+    assert scraper.to_odds_events(payload) == []
+
+
 def test_to_odds_events_maps_tennis_singles_two_way_market_with_no_draw():
     """Every live tennis Match betOffer found at discovery time was 2-way
     (no OT_CROSS) -- tennis has no mechanism to end in a draw at all, so
@@ -573,10 +675,10 @@ def test_to_odds_events_skips_cricket_events_without_a_match_odds_offer():
     assert scraper.to_odds_events(payload) == []
 
 
-def test_to_odds_events_handles_soccer_rugby_cricket_and_tennis_in_the_same_batch_independently():
-    """poll() now combines all four sports' raw payloads before
+def test_to_odds_events_handles_soccer_rugby_cricket_tennis_and_basketball_in_the_same_batch_independently():
+    """poll() now combines all five sports' raw payloads before
     to_odds_events ever sees them -- confirm the per-event sport lookup (and
-    its matching moneyline criterion) doesn't leak state across all four
+    its matching moneyline criterion) doesn't leak state across all five
     sports in one batch. Notably cricket and tennis share the exact same
     criterion englishLabel ("Match Odds"), so this also confirms that
     coincidence doesn't cause cross-sport mix-ups."""
@@ -586,13 +688,14 @@ def test_to_odds_events_handles_soccer_rugby_cricket_and_tennis_in_the_same_batc
             RUGBY_TWO_WAY_RAW_PAYLOAD["events"][0],
             CRICKET_TWO_WAY_RAW_PAYLOAD["events"][0],
             TENNIS_SINGLES_RAW_PAYLOAD["events"][0],
+            BASKETBALL_TWO_WAY_RAW_PAYLOAD["events"][0],
         ]
     }
     scraper = SunbetScraper()
 
     events = scraper.to_odds_events(payload)
 
-    assert len(events) == 4
+    assert len(events) == 5
     by_sport = {e.sport: e for e in events}
     assert by_sport["soccer"].home_team == "Leixoes U23"
     assert by_sport["rugby"].home_team == "New Zealand"
@@ -600,6 +703,8 @@ def test_to_odds_events_handles_soccer_rugby_cricket_and_tennis_in_the_same_batc
     assert by_sport["cricket"].markets["moneyline"].draw_odds is None
     assert by_sport["tennis"].home_team == "Pierre-Hugues Herbert"
     assert by_sport["tennis"].markets["moneyline"].draw_odds is None
+    assert by_sport["basketball"].home_team == "Manisa Buyuksehir Belediye"
+    assert by_sport["basketball"].markets["moneyline"].draw_odds is None
 
 
 def test_to_odds_events_maps_rugby_two_way_market_with_no_draw():
@@ -759,10 +864,12 @@ async def test_poll_continues_past_a_transient_fetch_failure(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_poll_fetches_every_configured_sport_and_merges_results(monkeypatch):
-    """The default scraper polls soccer, rugby, cricket, and tennis every
-    cycle, as four separate requests to the same endpoint, and publishes
-    them together as one batch."""
-    scraper = SunbetScraper()  # default kambi_sport_slugs: football + rugby_union + cricket + tennis
+    """The default scraper polls soccer, rugby, cricket, tennis, and
+    basketball every cycle, as five separate requests to the same endpoint,
+    and publishes them together as one batch."""
+    scraper = (
+        SunbetScraper()
+    )  # default kambi_sport_slugs: football + rugby_union + cricket + tennis + basketball
     requested_slugs = []
 
     payload_by_slug = {
@@ -770,6 +877,7 @@ async def test_poll_fetches_every_configured_sport_and_merges_results(monkeypatc
         "rugby_union": RUGBY_TWO_WAY_RAW_PAYLOAD,
         "cricket": CRICKET_TWO_WAY_RAW_PAYLOAD,
         "tennis": TENNIS_SINGLES_RAW_PAYLOAD,
+        "basketball": BASKETBALL_TWO_WAY_RAW_PAYLOAD,
     }
 
     async def fake_fetch_raw_odds(kambi_sport_slug):
@@ -783,16 +891,17 @@ async def test_poll_fetches_every_configured_sport_and_merges_results(monkeypatc
         results.append(events)
         break
 
-    assert requested_slugs == ["football", "rugby_union", "cricket", "tennis"]
+    assert requested_slugs == ["football", "rugby_union", "cricket", "tennis", "basketball"]
     assert len(results) == 1
     batch = results[0]
-    assert len(batch) == 4
-    assert {e.sport for e in batch} == {"soccer", "rugby", "cricket", "tennis"}
+    assert len(batch) == 5
+    assert {e.sport for e in batch} == {"soccer", "rugby", "cricket", "tennis", "basketball"}
     assert {e.home_team for e in batch} == {
         "Leixoes U23",
         "New Zealand",
         "Sri Lanka",
         "Pierre-Hugues Herbert",
+        "Manisa Buyuksehir Belediye",
     }
 
 
@@ -800,7 +909,9 @@ async def test_poll_fetches_every_configured_sport_and_merges_results(monkeypatc
 async def test_poll_still_publishes_the_other_sports_when_one_sports_fetch_fails(monkeypatch):
     import httpx
 
-    scraper = SunbetScraper()  # default kambi_sport_slugs: football + rugby_union + cricket + tennis
+    scraper = (
+        SunbetScraper()
+    )  # default kambi_sport_slugs: football + rugby_union + cricket + tennis + basketball
 
     async def fake_fetch_raw_odds(kambi_sport_slug):
         if kambi_sport_slug == "football":
@@ -809,7 +920,9 @@ async def test_poll_still_publishes_the_other_sports_when_one_sports_fetch_fails
             return RUGBY_TWO_WAY_RAW_PAYLOAD
         if kambi_sport_slug == "cricket":
             return CRICKET_TWO_WAY_RAW_PAYLOAD
-        return TENNIS_SINGLES_RAW_PAYLOAD
+        if kambi_sport_slug == "tennis":
+            return TENNIS_SINGLES_RAW_PAYLOAD
+        return BASKETBALL_TWO_WAY_RAW_PAYLOAD
 
     monkeypatch.setattr(scraper, "fetch_raw_odds", fake_fetch_raw_odds)
 
@@ -820,8 +933,8 @@ async def test_poll_still_publishes_the_other_sports_when_one_sports_fetch_fails
 
     assert len(results) == 1
     batch = results[0]
-    assert len(batch) == 3
-    assert {e.sport for e in batch} == {"rugby", "cricket", "tennis"}
+    assert len(batch) == 4
+    assert {e.sport for e in batch} == {"rugby", "cricket", "tennis", "basketball"}
 
 
 @pytest.mark.asyncio
@@ -834,7 +947,9 @@ async def test_poll_skips_the_yield_when_every_sport_fails_this_cycle(monkeypatc
 
     import httpx
 
-    scraper = SunbetScraper()  # default kambi_sport_slugs: football + rugby_union + cricket + tennis
+    scraper = (
+        SunbetScraper()
+    )  # default kambi_sport_slugs: football + rugby_union + cricket + tennis + basketball
     call_count = 0
 
     async def always_fails(kambi_sport_slug):
@@ -850,6 +965,6 @@ async def test_poll_skips_the_yield_when_every_sport_fails_this_cycle(monkeypatc
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(agen.__anext__(), timeout=0.5)
 
-    # Several full cycles (4 sport fetches each) should have run in that
+    # Several full cycles (5 sport fetches each) should have run in that
     # window, all failing, with nothing ever yielded.
     assert call_count >= 2
