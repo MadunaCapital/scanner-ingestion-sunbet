@@ -316,6 +316,127 @@ RUGBY_THREE_WAY_RAW_PAYLOAD = {
 }
 
 
+# Shape captured from a real, plain GET to Sunbet's Kambi-hosted `listView`
+# endpoint with the "cricket" sport slug (see scraper.py's module docstring
+# for how that slug was confirmed -- the naive guess "cricket" worked first
+# try, no brute-forcing needed). Trimmed to one match's worth of records,
+# field names and values unchanged from the real response. A genuine 2-way
+# market -- an Asian Games ODI with only OT_ONE/OT_TWO outcomes, no
+# OT_CROSS -- consistent with every cricket fixture seen in the same live
+# payload (international ODIs, South Africa's domestic Pro20 Cup T20
+# competition): no live Test-format match with an actual 3-way price was
+# observed at discovery time (see module docstring for the one Ashes entry
+# that was an outright series market, not a match price).
+CRICKET_TWO_WAY_RAW_PAYLOAD = {
+    "events": [
+        {
+            "event": {
+                "id": 1029290878,
+                "name": "Sri Lanka - Nepal",
+                "homeName": "Sri Lanka",
+                "awayName": "Nepal",
+                "start": "2026-09-29T00:00:00Z",
+                "group": "Men",
+                "sport": "CRICKET",
+                "state": "NOT_STARTED",
+            },
+            "betOffers": [
+                {
+                    "id": 2697290657,
+                    "criterion": {"id": 1001214599, "label": "Match Odds", "englishLabel": "Match Odds"},
+                    "betOfferType": {"id": 2, "name": "Match", "englishName": "Match"},
+                    "eventId": 1029290878,
+                    "outcomes": [
+                        {
+                            "id": 4353280958,
+                            "label": "1",
+                            "odds": 1520,
+                            "participant": "Sri Lanka",
+                            "type": "OT_ONE",
+                            "status": "OPEN",
+                            "betOfferId": 2697290657,
+                        },
+                        {
+                            "id": 4353280959,
+                            "label": "2",
+                            "odds": 2450,
+                            "participant": "Nepal",
+                            "type": "OT_TWO",
+                            "status": "OPEN",
+                            "betOfferId": 2697290657,
+                        },
+                    ],
+                }
+            ],
+        }
+    ]
+}
+
+
+def test_to_odds_events_maps_cricket_two_way_market_with_no_draw():
+    """Every live cricket fixture found at discovery time was limited-overs
+    (ODI/T20) and 2-way (no OT_CROSS) -- draw_odds must come through unset
+    rather than a fabricated 3-way shape."""
+    scraper = SunbetScraper()
+
+    events = scraper.to_odds_events(CRICKET_TWO_WAY_RAW_PAYLOAD)
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.sport == "cricket"
+    assert event.league == "Men"
+    assert event.home_team == "Sri Lanka"
+    assert event.away_team == "Nepal"
+    assert event.bookmaker == "sunbet"
+    assert event.event_id is None
+    assert event.markets["moneyline"].home_odds == 1.52
+    assert event.markets["moneyline"].away_odds == 2.45
+    assert event.markets["moneyline"].draw_odds is None
+
+
+def test_to_odds_events_skips_cricket_events_without_a_match_odds_offer():
+    payload = {
+        "events": [
+            {
+                **CRICKET_TWO_WAY_RAW_PAYLOAD["events"][0],
+                "betOffers": [
+                    {
+                        **CRICKET_TWO_WAY_RAW_PAYLOAD["events"][0]["betOffers"][0],
+                        "betOfferType": {"id": 9, "name": "Handicap"},
+                    }
+                ],
+            }
+        ]
+    }
+    scraper = SunbetScraper()
+
+    assert scraper.to_odds_events(payload) == []
+
+
+def test_to_odds_events_handles_soccer_rugby_and_cricket_in_the_same_batch_independently():
+    """poll() now combines all three sports' raw payloads before
+    to_odds_events ever sees them -- confirm the per-event sport lookup (and
+    its matching moneyline criterion) doesn't leak state across all three
+    sports in one batch."""
+    payload = {
+        "events": [
+            SAMPLE_RAW_PAYLOAD["events"][0],
+            RUGBY_TWO_WAY_RAW_PAYLOAD["events"][0],
+            CRICKET_TWO_WAY_RAW_PAYLOAD["events"][0],
+        ]
+    }
+    scraper = SunbetScraper()
+
+    events = scraper.to_odds_events(payload)
+
+    assert len(events) == 3
+    by_sport = {e.sport: e for e in events}
+    assert by_sport["soccer"].home_team == "Leixoes U23"
+    assert by_sport["rugby"].home_team == "New Zealand"
+    assert by_sport["cricket"].home_team == "Sri Lanka"
+    assert by_sport["cricket"].markets["moneyline"].draw_odds is None
+
+
 def test_to_odds_events_maps_rugby_two_way_market_with_no_draw():
     """Rugby's international-test 2-way market (no OT_CROSS) must map with
     draw_odds left unset, not force a fake 3-way structure."""
@@ -472,15 +593,21 @@ async def test_poll_continues_past_a_transient_fetch_failure(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_poll_fetches_every_configured_sport_and_merges_results(monkeypatch):
-    """The default scraper polls both soccer and rugby every cycle, as two
-    separate requests to the same endpoint, and publishes them together as
-    one batch."""
-    scraper = SunbetScraper()  # default kambi_sport_slugs: football + rugby_union
+    """The default scraper polls soccer, rugby, and cricket every cycle, as
+    three separate requests to the same endpoint, and publishes them
+    together as one batch."""
+    scraper = SunbetScraper()  # default kambi_sport_slugs: football + rugby_union + cricket
     requested_slugs = []
+
+    payload_by_slug = {
+        "football": SAMPLE_RAW_PAYLOAD,
+        "rugby_union": RUGBY_TWO_WAY_RAW_PAYLOAD,
+        "cricket": CRICKET_TWO_WAY_RAW_PAYLOAD,
+    }
 
     async def fake_fetch_raw_odds(kambi_sport_slug):
         requested_slugs.append(kambi_sport_slug)
-        return SAMPLE_RAW_PAYLOAD if kambi_sport_slug == "football" else RUGBY_TWO_WAY_RAW_PAYLOAD
+        return payload_by_slug[kambi_sport_slug]
 
     monkeypatch.setattr(scraper, "fetch_raw_odds", fake_fetch_raw_odds)
 
@@ -489,24 +616,26 @@ async def test_poll_fetches_every_configured_sport_and_merges_results(monkeypatc
         results.append(events)
         break
 
-    assert requested_slugs == ["football", "rugby_union"]
+    assert requested_slugs == ["football", "rugby_union", "cricket"]
     assert len(results) == 1
     batch = results[0]
-    assert len(batch) == 2
-    assert {e.sport for e in batch} == {"soccer", "rugby"}
-    assert {e.home_team for e in batch} == {"Leixoes U23", "New Zealand"}
+    assert len(batch) == 3
+    assert {e.sport for e in batch} == {"soccer", "rugby", "cricket"}
+    assert {e.home_team for e in batch} == {"Leixoes U23", "New Zealand", "Sri Lanka"}
 
 
 @pytest.mark.asyncio
-async def test_poll_still_publishes_the_other_sport_when_one_sports_fetch_fails(monkeypatch):
+async def test_poll_still_publishes_the_other_sports_when_one_sports_fetch_fails(monkeypatch):
     import httpx
 
-    scraper = SunbetScraper()  # default kambi_sport_slugs: football + rugby_union
+    scraper = SunbetScraper()  # default kambi_sport_slugs: football + rugby_union + cricket
 
     async def fake_fetch_raw_odds(kambi_sport_slug):
         if kambi_sport_slug == "football":
             raise httpx.ConnectError("simulated soccer outage")
-        return RUGBY_TWO_WAY_RAW_PAYLOAD
+        if kambi_sport_slug == "rugby_union":
+            return RUGBY_TWO_WAY_RAW_PAYLOAD
+        return CRICKET_TWO_WAY_RAW_PAYLOAD
 
     monkeypatch.setattr(scraper, "fetch_raw_odds", fake_fetch_raw_odds)
 
@@ -517,8 +646,8 @@ async def test_poll_still_publishes_the_other_sport_when_one_sports_fetch_fails(
 
     assert len(results) == 1
     batch = results[0]
-    assert len(batch) == 1
-    assert batch[0].sport == "rugby"
+    assert len(batch) == 2
+    assert {e.sport for e in batch} == {"rugby", "cricket"}
 
 
 @pytest.mark.asyncio
@@ -531,7 +660,7 @@ async def test_poll_skips_the_yield_when_every_sport_fails_this_cycle(monkeypatc
 
     import httpx
 
-    scraper = SunbetScraper()  # default kambi_sport_slugs: football + rugby_union
+    scraper = SunbetScraper()  # default kambi_sport_slugs: football + rugby_union + cricket
     call_count = 0
 
     async def always_fails(kambi_sport_slug):
@@ -547,6 +676,6 @@ async def test_poll_skips_the_yield_when_every_sport_fails_this_cycle(monkeypatc
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(agen.__anext__(), timeout=0.5)
 
-    # Several full cycles (2 sport fetches each) should have run in that
+    # Several full cycles (3 sport fetches each) should have run in that
     # window, all failing, with nothing ever yielded.
     assert call_count >= 2

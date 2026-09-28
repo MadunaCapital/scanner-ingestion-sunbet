@@ -28,20 +28,25 @@ no stealth browser, no Cloudflare bypass -- none of that is needed here
 because this specific endpoint (Kambi's own CloudFront-fronted API) isn't
 behind bot detection, even though Sunbet's own site is.
 
-Covers two sports, soccer and rugby (South Africa's #1 and #2 sports by
-popularity), both via the same `listView` endpoint and query shape -- just
-a different sport slug in the URL path. Rugby's slug is "rugby_union", not
-the more obvious "rugby" or "rugby-union" (both of those 404 with Kambi's
-own `{"error":{"message":"No event groups/participants are matching the
-given terms","status":404}}`); found by trying plausible slugs against the
-live endpoint with a bare curl, confirmed working with HTTP 200 and a real
-fixture (New Zealand vs Australia, Bledisloe Cup) whose own `terms`/`path`
-entries self-report `"termKey":"rugby_union"`/`"localizedName":"Rugby
-Union"`. Kambi's per-record `event.sport` field distinguishes the two
-("FOOTBALL" vs "RUGBY_UNION"), so `to_odds_events` reads the universal
-sport off each record itself (via KAMBI_SPORT_INFO below) rather than
-needing the caller to say which sport a given raw payload came from --
-same idiom as Betway ZA and Easybet's own rugby support in this project.
+Covers three sports -- soccer, rugby, and cricket (South Africa's #1-#3
+sports by popularity) -- all via the same `listView` endpoint and query
+shape, just a different sport slug in the URL path. Rugby's slug is
+"rugby_union", not the more obvious "rugby" or "rugby-union" (both of those
+404 with Kambi's own `{"error":{"message":"No event groups/participants are
+matching the given terms","status":404}}`); found by trying plausible slugs
+against the live endpoint with a bare curl, confirmed working with HTTP 200
+and a real fixture (New Zealand vs Australia, Bledisloe Cup) whose own
+`terms`/`path` entries self-report `"termKey":"rugby_union"`/
+`"localizedName":"Rugby Union"`. Cricket's slug is simply "cricket" (the
+naive guess, no brute-forcing needed this time) -- confirmed working with
+HTTP 200 and a real live payload (Sri Lanka vs Nepal, Asian Games, among
+others) whose own `path` entries self-report `"termKey":"cricket"`/
+`"englishName":"Cricket"`. Kambi's per-record `event.sport` field
+distinguishes all three ("FOOTBALL" vs "RUGBY_UNION" vs "CRICKET"), so
+`to_odds_events` reads the universal sport off each record itself (via
+KAMBI_SPORT_INFO below) rather than needing the caller to say which sport a
+given raw payload came from -- same idiom as Betway ZA and Easybet's own
+rugby support in this project.
 
 Rugby's moneyline betOffer uses betOfferType "Match" same as soccer, but a
 different criterion englishLabel: soccer's is "Full Time", rugby's is
@@ -57,6 +62,22 @@ rugby competitions. The mapping logic below was already sport-agnostic on
 this point for soccer (it never assumes OT_CROSS exists, `draw_odds` just
 stays unset), so no special-casing was needed to make it handle both rugby
 shapes correctly.
+
+Cricket's moneyline betOffer also uses betOfferType "Match", but yet
+another criterion englishLabel: "Match Odds" (neither soccer's "Full Time"
+nor rugby's "Regular Time" -- cricket has no notion of either). Every live
+cricket fixture inspected at discovery time (a listView pull with events
+spanning international ODIs, South Africa's domestic Pro20 Cup T20
+competition, and the Asian Games) was a genuine 2-way market -- only
+OT_ONE/OT_TWO outcomes, no OT_CROSS anywhere in the payload -- consistent
+with limited-overs cricket (ODI/T20), which unlike Test cricket cannot end
+in a draw. The payload did include one Ashes ("Test") series entry, but it
+was an outright/ante-post series-winner market with an empty `betOffers`
+list (no match-level odds yet), not an actual 3-way Test match price, so a
+genuine 3-way cricket market was not observed live at discovery time --
+only noted as a theoretical possibility (Test cricket can be drawn) worth
+re-checking if one ever shows up. As with rugby, the mapping logic needed
+no special-casing to handle this: it never assumes OT_CROSS exists.
 """
 
 import asyncio
@@ -76,15 +97,18 @@ SUNBET_KAMBI_LISTVIEW_URL_TEMPLATE = (
 
 # The Kambi `listView` path segment for each sport this adapter polls. See
 # the module docstring for how "rugby_union" was confirmed (and why the
-# more obvious "rugby"/"rugby-union" guesses are wrong -- both 404).
-DEFAULT_KAMBI_SPORT_SLUGS = ("football", "rugby_union")
+# more obvious "rugby"/"rugby-union" guesses are wrong -- both 404), and how
+# "cricket" (the naive guess) was confirmed to work as-is.
+DEFAULT_KAMBI_SPORT_SLUGS = ("football", "rugby_union", "cricket")
 
 # Kambi's per-record `event.sport` value -> the universal OddsEvent.sport
 # name to publish, and which Match betOffer's criterion.englishLabel is
-# that sport's full/regular-time moneyline market (see module docstring).
+# that sport's full/regular-time/match-odds moneyline market (see module
+# docstring).
 KAMBI_SPORT_INFO = {
     "FOOTBALL": {"sport": "soccer", "moneyline_criterion": "Full Time"},
     "RUGBY_UNION": {"sport": "rugby", "moneyline_criterion": "Regular Time"},
+    "CRICKET": {"sport": "cricket", "moneyline_criterion": "Match Odds"},
 }
 
 # Plain, fixed-interval polling -- same cadence as a normal page refresh,
@@ -144,7 +168,7 @@ class SunbetScraper(BaseScraper):
         scope. Sport-agnostic -- it reads each record's own `event.sport`
         field (via KAMBI_SPORT_INFO) rather than trusting which sport slug
         the caller happened to fetch, so it works the same whether `raw`
-        came from the football or the rugby_union listView call.
+        came from the football, rugby_union, or cricket listView call.
 
         Note event_id (the OddsEvent field) is left unset here -- that's the
         engine's job downstream (see the note on OddsEvent.event_id in
